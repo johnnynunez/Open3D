@@ -172,7 +172,7 @@ build_pip_package() {
     if [[ "build_jupyter" =~ ^($options)$ ]]; then
         echo "Building Jupyter extension in Python wheel."
         BUILD_JUPYTER_EXTENSION=ON
-        BUILD_WEBRTC_FROM_SOURCE=ON
+        BUILD_WEBRTC_FROM_SOURCE=OFF
     else
         echo "Jupyter extension disabled in Python wheel."
         BUILD_JUPYTER_EXTENSION=OFF
