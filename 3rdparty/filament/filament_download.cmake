@@ -23,22 +23,12 @@ else()
     elseif(APPLE)
         set(FILAMENT_URL https://github.com/google/filament/releases/download/v1.62.0/filament-v1.62.0-mac.tgz)
         set(FILAMENT_SHA256 9a5fa38bcd0bdcec47ef91c54e2701c42f0562a48ce10b9f67f6c2c957028885)
-    else()      # Linux: Check glibc version and use open3d filament binary if new (Ubuntu 20.04 and similar)
-        execute_process(COMMAND ldd --version OUTPUT_VARIABLE ldd_version)
-        string(REGEX MATCH "([0-9]+\.)+[0-9]+" glibc_version ${ldd_version})
-        if(${glibc_version} VERSION_LESS "2.33")
-            set(FILAMENT_URL
-                    https://github.com/isl-org/open3d_downloads/releases/download/filament/filament-v1.49.1-ubuntu20.04.tgz)
-            set(FILAMENT_SHA256 f4ba020f0ca63540e2f86b36d1728a1ea063ddd5eb55b0ba6fc621ee815a60a7)
-            message(STATUS "GLIBC version ${glibc_version} found: Using "
-                    "Open3D built Filament binary for Ubuntu 20.04.")
-        else()
-            set(FILAMENT_URL
-                    https://github.com/google/filament/releases/download/v1.62.0/filament-v1.62.0-linux.tgz)
-            set(FILAMENT_SHA256 bd7cfe8daead2cff5ff85533e1d14130ebf65aa6d335d761f89f8a12edb671cc)
-            message(STATUS "GLIBC version ${glibc_version} found: Using "
-                    "Google Filament binary.")
-        endif()
+    else()
+        set(FILAMENT_URL
+                https://github.com/google/filament/releases/download/v1.62.0/filament-v1.62.0-linux.tgz)
+        set(FILAMENT_SHA256 bd7cfe8daead2cff5ff85533e1d14130ebf65aa6d335d761f89f8a12edb671cc)
+        message(STATUS "GLIBC version ${glibc_version} found: Using "
+                "Google Filament binary.")
     endif()
 
     set(lib_byproducts ${filament_LIBRARIES})
