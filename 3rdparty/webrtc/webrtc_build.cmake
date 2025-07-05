@@ -14,7 +14,8 @@ cmake_dependent_option(WEBRTC_IS_DEBUG
 
 # Set paths
 set(WEBRTC_ROOT ${CMAKE_BINARY_DIR}/webrtc/src/ext_webrtc)
-set(DEPOT_TOOLS_ROOT ${PROJECT_SOURCE_DIR}/../depot_tools)
+set(WEBRTC_SOURCE_DIR ${OPEN3D_THIRD_PARTY_DOWNLOAD_DIR}/webrtc)
+set(DEPOT_TOOLS_ROOT ${OPEN3D_THIRD_PARTY_DOWNLOAD_DIR}/depot_tools)
 
 # Set WebRTC build type path
 if(WEBRTC_IS_DEBUG)
@@ -37,8 +38,13 @@ endif()
 ExternalProject_Add(
     ext_webrtc
     PREFIX webrtc
-    DOWNLOAD_COMMAND ${CMAKE_COMMAND} -E rm -rf ext_webrtc
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROJECT_SOURCE_DIR}/../webrtc ext_webrtc
+    DOWNLOAD_COMMAND
+        ${CMAKE_COMMAND}
+            -DWEBRTC_SRC=${WEBRTC_SOURCE_DIR}
+            -DDEPOT_TOOLS_DIR=${DEPOT_TOOLS_ROOT}
+            -DPATCH_DIR=${PROJECT_SOURCE_DIR}/3rdparty/webrtc
+            -DEXT_WEBRTC_DIR=${WEBRTC_ROOT}
+            -P ${PROJECT_SOURCE_DIR}/3rdparty/webrtc/webrtc_fetch.cmake
     UPDATE_COMMAND ""
     CONFIGURE_COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_BINARY_DIR}/args.gn
         ${WEBRTC_NINJA_ROOT}/args.gn
