@@ -144,9 +144,11 @@ build_pip_package() {
     if [[ "$AARCH" == "aarch64" ]]; then
         echo "Building for aarch64 architecture"
         BUILD_FILAMENT_FROM_SOURCE=ON
+        BUILD_WEBRTC_FROM_SOURCE=ON
     else
         echo "Building for x86_64 architecture"
         BUILD_FILAMENT_FROM_SOURCE=OFF
+        BUILD_WEBRTC_FROM_SOURCE=OFF
     fi
     set +u
     if [[ -f "${OPEN3D_ML_ROOT}/set_open3d_ml_root.sh" ]] &&
@@ -172,11 +174,9 @@ build_pip_package() {
     if [[ "build_jupyter" =~ ^($options)$ ]]; then
         echo "Building Jupyter extension in Python wheel."
         BUILD_JUPYTER_EXTENSION=ON
-        BUILD_WEBRTC_FROM_SOURCE=ON
     else
         echo "Jupyter extension disabled in Python wheel."
         BUILD_JUPYTER_EXTENSION=OFF
-        BUILD_WEBRTC_FROM_SOURCE=OFF
     fi
     set -u
 
@@ -192,8 +192,8 @@ build_pip_package() {
         "-DBUILD_TENSORFLOW_OPS=$BUILD_TENSORFLOW_OPS"
         "-DBUILD_PYTORCH_OPS=$BUILD_PYTORCH_OPS"
         "-DBUILD_FILAMENT_FROM_SOURCE=$BUILD_FILAMENT_FROM_SOURCE"
+        "-DBUILD_WEBRTC_FROM_SOURCE=$BUILD_WEBRTC_FROM_SOURCE"
         "-DBUILD_JUPYTER_EXTENSION=$BUILD_JUPYTER_EXTENSION"
-        "-DBUILD_WEBRTC=$BUILD_WEBRTC_FROM_SOURCE"
         "-DCMAKE_INSTALL_PREFIX=$OPEN3D_INSTALL_DIR"
         "-DCMAKE_BUILD_TYPE=Release"
         "-DBUILD_UNIT_TESTS=OFF"
