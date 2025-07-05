@@ -6,8 +6,20 @@
 # - NINJA_TARGETS
 # - EXTRA_WEBRTC_OBJS  # You have to define WEBRTC_NINJA_ROOT before including this file
 
+# === START: ADDED ARCHITECTURE DETECTION ===
+if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+    set(WEBRTC_TARGET_CPU "arm64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
+    set(WEBRTC_TARGET_CPU "x64")
+else()
+    message(FATAL_ERROR "Unsupported architecture for WebRTC build: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+message(STATUS "WebRTC: Configuring for target_cpu=${WEBRTC_TARGET_CPU}")
+# === END: ADDED ARCHITECTURE DETECTION ===
+
 function(get_webrtc_args WEBRTC_ARGS)
     set(WEBRTC_ARGS "")
+    set(WEBRTC_ARGS target_cpu="${WEBRTC_TARGET_CPU}"\n${WEBRTC_ARGS})
 
     if(NOT MSVC)
         # ABI selection
