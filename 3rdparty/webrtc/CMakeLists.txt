@@ -33,8 +33,8 @@ cmake_dependent_option(WEBRTC_IS_DEBUG
 option(GLIBCXX_USE_CXX11_ABI "Set -D_GLIBCXX_USE_CXX11_ABI=1" ON)
 
 # Set paths
-set(WEBRTC_ROOT ${PROJECT_SOURCE_DIR})
 set(DEPOT_TOOLS_ROOT ${PROJECT_SOURCE_DIR}/../depot_tools)
+set(WEBRTC_ROOT ${PROJECT_SOURCE_DIR})
 
 # Sanity checks
 if(NOT EXISTS ${WEBRTC_ROOT}/src)
