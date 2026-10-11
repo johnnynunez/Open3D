@@ -47,7 +47,7 @@ jobs:
         import pathlib,re,hashlib,json
         root=pathlib.Path.cwd(); out=root/'compiler-probe';out.mkdir(exist_ok=True)
         paths=['cpp/open3d/t/pipelines/registration/RobustKernelImpl.h','cpp/open3d/t/geometry/kernel/GeometryMacros.h','cpp/open3d/t/pipelines/registration/RobustKernel.h']
-        texts=[(root/p).read_text() for p in paths]
+        texts=[(root/p).read_text(encoding='utf-8') for p in paths]
         macro=texts[0][texts[0].index('#define DISPATCH_ROBUST_KERNEL_FUNCTION('):texts[0].index('/// \\param scalar_t type:',texts[0].index('#define DISPATCH_ROBUST_KERNEL_FUNCTION('))]
         helpers=texts[1][texts[1].index('namespace open3d {'):texts[1].index('// https://stackoverflow.com')]
         enum=re.search(r'enum class RobustKernelMethod \{.*?\};',texts[2],re.S).group(0)
