@@ -9,6 +9,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Candidate extraction failed' }
 python "$helpers/extract_svd.py" evidence/candidate evidence/svd-candidate
 if ($LASTEXITCODE -ne 0) { throw 'Candidate numerical extraction failed' }
 $results=@()
+# Match the pinned project's existing warning policy; retain /WX.
+$policy=Get-Content cmake/Open3DShowAndAbortOnWarning.cmake -Raw
+$warnings=([regex]::Matches($policy,'/Wv:18|/wd[0-9]+') | ForEach-Object Value | Select-Object -Unique) -join ' '
+Copy-Item cmake/Open3DShowAndAbortOnWarning.cmake evidence/warning-policy.cmake
+$warnings | Set-Content evidence/warning-flags.txt
 foreach($version in @('14.44.35207','14.51.36231')) {
   foreach($variant in @('original','candidate')) {
     $inc=(Resolve-Path "evidence/svd-$variant").Path
@@ -18,7 +23,7 @@ foreach($version in @('14.44.35207','14.51.36231')) {
 @echo off
 call "$vs\VC\Auxiliary\Build\vcvarsall.bat" arm64 -vcvars_ver=$version || exit /b 1
 where cl
-cl /nologo /std:c++17 /EHsc /O2 /W3 /WX /I"$inc" "$helpers\svd_probe.cpp" /Fe:"$dir\probe.exe" /Fo:"$dir\probe.obj"
+cl /nologo /std:c++17 /EHsc /O2 /W4 /WX $warnings /I"$inc" "$helpers\svd_probe.cpp" /Fe:"$dir\probe.exe" /Fo:"$dir\probe.obj"
 exit /b %errorlevel%
 "@ | Set-Content "$dir/compile.cmd" -Encoding ascii
     & cmd /d /c "$dir/compile.cmd" 2>&1 | Tee-Object "$dir/compile.log"

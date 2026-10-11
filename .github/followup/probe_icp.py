@@ -86,7 +86,9 @@ for repeat in range(2):
                 if mode == 'zero_gradient':
                     alt.point.color_gradients=o3d.core.Tensor.zeros(grad.shape,dtype)
                 else:
-                    f=target.to(o3d.core.float32)
+                    f=target.clone()
+                    for key in list(f.point):
+                        f.point[key]=f.point[key].to(o3d.core.float32)
                     del f.point['color_gradients']
                     f.estimate_color_gradients(max_nn=30,radius=1.4)
                     alt.point.color_gradients=f.point.color_gradients.to(dtype)
