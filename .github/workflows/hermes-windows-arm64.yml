@@ -6,6 +6,38 @@ permissions:
   contents: read
   actions: read
 jobs:
+  svd-differential:
+    runs-on: windows-11-arm
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+          sparse-checkout: .github/followup
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: mayankag-qti/Open3D
+          ref: f47d260b2074d56d00e7a68eeabebd5bd45ad812
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - name: Native original versus candidate SVD differential
+        shell: pwsh
+        working-directory: source
+        run: |
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          & ../harness/.github/followup/compare_svd.ps1
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: svd-differential
+          path: ${{ github.workspace }}/source/evidence/
+          if-no-files-found: error
+          retention-days: 14
   retained-wheel:
     runs-on: windows-11-arm
     timeout-minutes: 20
@@ -63,7 +95,9 @@ jobs:
           $w=(Get-ChildItem wheel -Recurse -Filter *.whl).FullName
           ./.venv/Scripts/python -m pip install pip==24.3.1
           if ($LASTEXITCODE -ne 0) { throw 'pip failed' }
-          ./.venv/Scripts/python -m pip install --only-binary=:all: -c forbid-torch.txt -r python/requirements_test.txt $w
+          ./.venv/Scripts/python ../harness/.github/followup/requirements_overlay.py
+          if ($LASTEXITCODE -ne 0) { throw 'Requirements overlay verification failed' }
+          ./.venv/Scripts/python -m pip install --only-binary=:all: -c forbid-torch.txt -r evidence/requirements_test.overlay.txt $w
           if ($LASTEXITCODE -ne 0) { throw 'install failed' }
           ./.venv/Scripts/python -m pip list --format=json | Set-Content evidence/installed.json
           ./.venv/Scripts/python -c "import importlib.util,sysconfig,open3d; assert sysconfig.get_platform()=='win-arm64'; assert importlib.util.find_spec('torch') is None; assert not open3d._build_config['BUILD_PYTORCH_OPS']; print(open3d.__version__,open3d.__file__,open3d._build_config)"
