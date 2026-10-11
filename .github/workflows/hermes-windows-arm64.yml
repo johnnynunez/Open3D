@@ -32,118 +32,370 @@ jobs:
       env:
         EXPECTED_SOURCE_SHA: f47d260b2074d56d00e7a68eeabebd5bd45ad812
         SOURCE_REPOSITORY: mayankag-qti/Open3D
-      run: '$actual = (git rev-parse HEAD).Trim()
-
+      run: |
+        $actual = (git rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0 -or $actual -ne $env:EXPECTED_SOURCE_SHA) { throw "Unexpected source revision: $actual" }
-
-        @{ source_sha=$actual; source_repository=$env:SOURCE_REPOSITORY; ci_sha=$env:GITHUB_SHA; runner_arch=$env:RUNNER_ARCH
-        } | ConvertTo-Json | Set-Content provenance.json
-
-        '
+        @{ source_sha=$actual; source_repository=$env:SOURCE_REPOSITORY; ci_sha=$env:GITHUB_SHA; runner_arch=$env:RUNNER_ARCH } | ConvertTo-Json | Set-Content provenance.json
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
         architecture: arm64
+    - name: Extract unchanged robust-kernel compiler probe
+      shell: python
+      run: |
+        import pathlib,re,hashlib,json
+        root=pathlib.Path.cwd(); out=root/'compiler-probe';out.mkdir(exist_ok=True)
+        paths=['cpp/open3d/t/pipelines/registration/RobustKernelImpl.h','cpp/open3d/t/geometry/kernel/GeometryMacros.h','cpp/open3d/t/pipelines/registration/RobustKernel.h']
+        texts=[(root/p).read_text() for p in paths]
+        macro=texts[0][texts[0].index('#define DISPATCH_ROBUST_KERNEL_FUNCTION('):texts[0].index('/// \\param scalar_t type:',texts[0].index('#define DISPATCH_ROBUST_KERNEL_FUNCTION('))]
+        helpers=texts[1][texts[1].index('namespace open3d {'):texts[1].index('// https://stackoverflow.com')]
+        enum=re.search(r'enum class RobustKernelMethod \{.*?\};',texts[2],re.S).group(0)
+        glue='''// Reduced compiler probe, NOT a substitute for the original Open3D tests.
+        // Dispatch macro, IsClose/Square and enum are extracted without changes.
+        #include <algorithm>
+        #include <cmath>
+        #include <cstdio>
+        #include <stdexcept>
+        #define OPEN3D_HOST_DEVICE
+        using std::abs; using std::exp; using std::max; using std::min; using std::pow;
+        namespace utility { [[noreturn]] inline void LogError(const char *s) { throw std::runtime_error(s); } }
+        '''
+        checks=[]
+        for shape,want in [('2.0','1.0'),('0.0','0.675584'),('-2.0','0.650259'),('1.0','0.714213')]:
+            checks.append(f'''DISPATCH_ROBUST_KERNEL_FUNCTION(RobustKernelMethod::GeneralizedLoss, double, 1.0, {shape}, [&]() {{
+                double w=GetWeightFromRobustKernel(0.98);
+                std::printf("shape={shape} weight=%.9g\\n",w);
+                if (!std::isfinite(w) || std::abs(w-({want}))>1e-3) throw std::runtime_error("weight oracle failed");
+            }});''')
+        code=glue+helpers+'\nusing open3d::Square;\n'+enum+'\n'+macro+'\nint main() {\n'+'\n'.join(checks)+'\n}\n'
+        (out/'probe.cpp').write_text(code)
+        (out/'source-extraction.json').write_text(json.dumps({'scope':'reduced compiler probe; exact original macro/helpers, double precision; original C++ suite remains mandatory','source_files':{p:hashlib.sha256((root/p).read_bytes()).hexdigest() for p in paths},'probe_sha256':hashlib.sha256(code.encode()).hexdigest()},indent=2))
+        print(out/'probe.cpp')
+    - name: Compare newest MSVC with installed VS2022 v143 toolset
+      id: probe
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        $vs = (& $vswhere -latest -products * -property installationPath).Trim()
+        if (-not $vs) { throw 'Visual Studio unavailable' }
+        & $vswhere -all -products * -format json | Set-Content compiler-probe/visual-studio.json
+        $versions = @(Get-ChildItem "$vs/VC/Tools/MSVC" -Directory | Sort-Object Name)
+        $versions.FullName | Set-Content compiler-probe/toolsets.txt
+        $old = @($versions | Where-Object Name -Like '14.44.*' | Select-Object -Last 1)
+        if ($old.Count -ne 1) { throw 'Documented VS2022 v143/14.44 ARM64 component unavailable' }
+        $pin = $old[0].Name
+        $latest = $versions[-1].Name
+        $probe = (Resolve-Path compiler-probe).Path
+        $results = @()
+        foreach ($version in @($latest,$pin) | Select-Object -Unique) {
+          $dir = Join-Path $probe $version
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $batch = @"
+        @echo off
+        call "$vs\VC\Auxiliary\Build\vcvarsall.bat" arm64 -vcvars_ver=$version || exit /b 1
+        where cl
+        cl /nologo /std:c++17 /EHsc /O2 /W3 /WX "$probe\probe.cpp" /Fe:"$dir\probe.exe" /Fo:"$dir\probe.obj"
+        exit /b %errorlevel%
+        "@
+          $cmd = Join-Path $dir 'compile.cmd'
+          $batch | Set-Content $cmd -Encoding ascii
+          & cmd /d /c $cmd 2>&1 | Tee-Object -FilePath "$dir/compile.log"
+          $compiled = $LASTEXITCODE
+          $runtime = $null
+          if ($compiled -eq 0) {
+            & "$dir/probe.exe" 2>&1 | Tee-Object -FilePath "$dir/runtime.log"
+            $runtime = $LASTEXITCODE
+          }
+          $results += @{version=$version; compile_exit=$compiled; runtime_exit=$runtime; log="$dir/compile.log"}
+        }
+        $results | ConvertTo-Json -Depth 5 | Set-Content compiler-probe/comparison.json
+        $pinned = @($results | Where-Object version -EQ $pin)[0]
+        if ($pinned.compile_exit -ne 0 -or $pinned.runtime_exit -ne 0) { throw 'Pinned-toolset compiler/numerical probe failed' }
+        "MSVC_TOOLSET_VERSION=$pin" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        "VCPKG_VISUAL_STUDIO_PATH=$vs" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        $overlay = Join-Path $env:RUNNER_TEMP 'vcpkg-triplets-v143'
+        New-Item -ItemType Directory -Force $overlay | Out-Null
+        $base = Join-Path $env:VCPKG_INSTALLATION_ROOT 'triplets/arm64-windows-static-md.cmake'
+        if (-not (Test-Path $base)) { $base = Join-Path $env:VCPKG_INSTALLATION_ROOT 'triplets/community/arm64-windows-static-md.cmake' }
+        if (-not (Test-Path $base)) { throw 'Original vcpkg ARM64 static-md triplet missing' }
+        $triplet = Join-Path $overlay 'arm64-windows-static-md.cmake'
+        Copy-Item $base $triplet
+        @"
+        set(VCPKG_PLATFORM_TOOLSET v143)
+        set(VCPKG_PLATFORM_TOOLSET_VERSION $pin)
+        "@ | Add-Content $triplet
+        Copy-Item $triplet compiler-probe/arm64-windows-static-md.cmake
+        "VCPKG_OVERLAY_TRIPLETS=$overlay" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        # Expected failure of the comparison compiler is diagnostic, not the build verdict.
+        # The pin is accepted only if its compilation and numerical probe both succeed.
+        exit 0
+    - name: Upload compiler comparison before full build
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: open3d-compiler-comparison
+        path: ${{ github.workspace }}/compiler-probe/
+        if-no-files-found: error
+        retention-days: 14
     - name: Install Python build requirements
       shell: pwsh
-      run: "$ErrorActionPreference = 'Stop'\npython -m pip install -U pip\nif ($LASTEXITCODE -ne 0) { throw \"pip self-upgrade\
-        \ failed.\" }\npython -m pip install -r python/requirements.txt `\n  -r python/requirements_build.txt\nif ($LASTEXITCODE\
-        \ -ne 0) { throw \"Requirements install failed.\" }\n"
+      run: |
+        $ErrorActionPreference = 'Stop'
+        python -m pip install -U pip
+        if ($LASTEXITCODE -ne 0) { throw "pip self-upgrade failed." }
+        python -m pip install -r python/requirements.txt `
+          -r python/requirements_build.txt
+        if ($LASTEXITCODE -ne 0) { throw "Requirements install failed." }
     - name: Generate vcpkg baseline
       shell: pwsh
-      run: "$ErrorActionPreference = 'Stop'\n$vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT\nif (-not $vcpkgRoot) { throw \"VCPKG_INSTALLATION_ROOT\
-        \ is not set.\" }\n$baseline = (git -C \"$vcpkgRoot\" rev-parse HEAD).Trim()\nif (-not $baseline) { throw \"Could\
-        \ not read vcpkg baseline from $vcpkgRoot\" }\nWrite-Host \"vcpkg baseline = $baseline\"\n$config = @{\n  'default-registry'\
-        \ = @{\n    kind       = 'git'\n    repository = 'https://github.com/microsoft/vcpkg'\n    baseline   = $baseline\n\
-        \  }\n} | ConvertTo-Json -Depth 10\n$config | Out-File -FilePath 'vcpkg-configuration.json' -Encoding ascii\n"
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+        if (-not $vcpkgRoot) { throw "VCPKG_INSTALLATION_ROOT is not set." }
+        $baseline = (git -C "$vcpkgRoot" rev-parse HEAD).Trim()
+        if (-not $baseline) { throw "Could not read vcpkg baseline from $vcpkgRoot" }
+        Write-Host "vcpkg baseline = $baseline"
+        $config = @{
+          'default-registry' = @{
+            kind       = 'git'
+            repository = 'https://github.com/microsoft/vcpkg'
+            baseline   = $baseline
+          }
+        } | ConvertTo-Json -Depth 10
+        $config | Out-File -FilePath 'vcpkg-configuration.json' -Encoding ascii
     - name: Detect Visual Studio generator
       shell: pwsh
-      run: "$ErrorActionPreference = 'Stop'\n$vswhere = Join-Path ${env:ProgramFiles(x86)} `\n  'Microsoft Visual Studio\\\
-        Installer\\vswhere.exe'\nif (-not (Test-Path $vswhere)) { throw \"vswhere.exe not found at $vswhere\" }\n\n$version\
-        \ = & $vswhere -latest -products * -property installationVersion\nif (-not $version) { throw \"No Visual Studio installation\
-        \ found.\" }\n\n$major = [int]($version.Split('.')[0])\nswitch ($major) {\n  17      { $generator = 'Visual Studio\
-        \ 17 2022' }\n  18      { $generator = 'Visual Studio 18 2026' }\n  default { throw \"Unsupported Visual Studio major\
-        \ version: $major\" }\n}\n\nWrite-Host \"Detected VS $version -> generator '$generator'\"\n\"CMAKE_GENERATOR_NAME=$generator\"\
-        \ |\n  Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8\n"
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+          'Microsoft Visual Studio\Installer\vswhere.exe'
+        if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+
+        $version = & $vswhere -latest -products * -property installationVersion
+        if (-not $version) { throw "No Visual Studio installation found." }
+
+        $major = [int]($version.Split('.')[0])
+        switch ($major) {
+          17      { $generator = 'Visual Studio 17 2022' }
+          18      { $generator = 'Visual Studio 18 2026' }
+          default { throw "Unsupported Visual Studio major version: $major" }
+        }
+
+        Write-Host "Detected VS $version -> generator '$generator'"
+        "CMAKE_GENERATOR_NAME=$generator" |
+          Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
     - name: Config
       shell: pwsh
-      run: "$ErrorActionPreference = 'Stop'\nNew-Item -Path '${{ env.BUILD_DIR }}' -ItemType Directory -Force | Out-Null\n\
-        $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT\nif (-not $vcpkgRoot) { throw \"VCPKG_INSTALLATION_ROOT is not set.\" }\n\
-        $toolchain = Join-Path $vcpkgRoot 'scripts\\buildsystems\\vcpkg.cmake'\ncmake -S . -B '${{ env.BUILD_DIR }}' -G \"\
-        $env:CMAKE_GENERATOR_NAME\" -A ARM64 `\n  -DCMAKE_TOOLCHAIN_FILE=\"$toolchain\" `\n  -DVCPKG_TARGET_TRIPLET=arm64-windows-static-md\
-        \ `\n  -DOPEN3D_USE_VCPKG=ON `\n  -DVCPKG_MANIFEST_FEATURES=\"tests;minizip\" `\n  -DWITH_MINIZIP=ON `\n  -DBUILD_SHARED_LIBS=ON\
-        \ `\n  -DSTATIC_WINDOWS_RUNTIME=OFF `\n  -DBUILD_UNIT_TESTS=ON `\n  -DBUILD_PYTHON_MODULE=ON `\n  -DIGNORE_STUBGEN_ERRORS=ON\
-        \ `\n  -DBUILD_JUPYTER_EXTENSION=OFF `\n  -DBUILD_GUI=OFF `\n  -DBUILD_EXAMPLES=OFF `\n  -DBUILD_ISPC_MODULE=OFF `\n\
-        \  -DBUILD_CUDA_MODULE=OFF `\n  -DBUILD_SYCL_MODULE=OFF `\n  -DBUILD_PYTORCH_OPS=OFF `\n  -DBUILD_AZURE_KINECT=OFF\
-        \ `\n  -DBUILD_LIBREALSENSE=OFF `\n  -DBUILD_WEBRTC=OFF `\n  -DPython3_EXECUTABLE=$((Get-Command python).Source) `\n\
-        \  -DCMAKE_BUILD_TYPE=${{ matrix.CONFIG }}\n\nif ($LASTEXITCODE -ne 0) { throw \"CMake configure failed\" }\n"
+      run: |
+        $ErrorActionPreference = 'Stop'
+        New-Item -Path '${{ env.BUILD_DIR }}' -ItemType Directory -Force | Out-Null
+        $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+        if (-not $vcpkgRoot) { throw "VCPKG_INSTALLATION_ROOT is not set." }
+        $toolchain = Join-Path $vcpkgRoot 'scripts\buildsystems\vcpkg.cmake'
+        cmake -S . -B '${{ env.BUILD_DIR }}' -G "$env:CMAKE_GENERATOR_NAME" -A ARM64 -T "v143,version=$env:MSVC_TOOLSET_VERSION" `
+          -DCMAKE_TOOLCHAIN_FILE="$toolchain" `
+          -DVCPKG_TARGET_TRIPLET=arm64-windows-static-md `
+          -DOPEN3D_USE_VCPKG=ON `
+          -DVCPKG_MANIFEST_FEATURES="tests;minizip" `
+          -DWITH_MINIZIP=ON `
+          -DBUILD_SHARED_LIBS=ON `
+          -DSTATIC_WINDOWS_RUNTIME=OFF `
+          -DBUILD_UNIT_TESTS=ON `
+          -DBUILD_PYTHON_MODULE=ON `
+          -DIGNORE_STUBGEN_ERRORS=ON `
+          -DBUILD_JUPYTER_EXTENSION=OFF `
+          -DBUILD_GUI=OFF `
+          -DBUILD_EXAMPLES=OFF `
+          -DBUILD_ISPC_MODULE=OFF `
+          -DBUILD_CUDA_MODULE=OFF `
+          -DBUILD_SYCL_MODULE=OFF `
+          -DBUILD_PYTORCH_OPS=OFF `
+          -DBUILD_AZURE_KINECT=OFF `
+          -DBUILD_LIBREALSENSE=OFF `
+          -DBUILD_WEBRTC=OFF `
+          -DPython3_EXECUTABLE=$((Get-Command python).Source) `
+          -DCMAKE_BUILD_TYPE=${{ matrix.CONFIG }}
+
+        if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
     - name: Build
       working-directory: ${{ env.BUILD_DIR }}
       shell: pwsh
-      run: '$ErrorActionPreference = ''Stop''
-
-        cmake --build . --parallel ${{ env.NPROC }} --config ${{ matrix.CONFIG }} --target tests
-
+      run: |
+        $ErrorActionPreference = 'Stop'
+        cmake --build . --parallel ${{ env.NPROC }} --config ${{ matrix.CONFIG }} --target tests -- /fl "/flp:logfile=build-tests.log;verbosity=normal"
 
         if ($LASTEXITCODE -ne 0) { throw "C++ build failed" }
-
-        '
     - name: Build Python wheel
       working-directory: ${{ env.BUILD_DIR }}
       shell: pwsh
-      run: "$ErrorActionPreference = 'Stop'\ncmake --build . --parallel ${{ env.NPROC }} --config ${{ matrix.CONFIG }} --target\
-        \ pip-package\nif ($LASTEXITCODE -ne 0) { throw \"pip-package build failed.\" }\n$whl = Get-ChildItem \"lib/python_package/pip_package/open3d*.whl\"\
-        \ |\n  Select-Object -First 1\nif (-not $whl) { throw \"Wheel not found after pip-package build.\" }\nWrite-Host \"\
-        Built wheel: $($whl.Name)\"\n"
+      run: |
+        $ErrorActionPreference = 'Stop'
+        cmake --build . --parallel ${{ env.NPROC }} --config ${{ matrix.CONFIG }} --target pip-package
+        if ($LASTEXITCODE -ne 0) { throw "pip-package build failed." }
+        $whl = Get-ChildItem "lib/python_package/pip_package/open3d*.whl" |
+          Select-Object -First 1
+        if (-not $whl) { throw "Wheel not found after pip-package build." }
+        Write-Host "Built wheel: $($whl.Name)"
+      id: wheel
     - name: Verify native Python, wheel PE payloads and RECORD
       shell: python
-      run: "import base64,csv,hashlib,io,json,pathlib,struct,sys,sysconfig,zipfile\nassert sysconfig.get_platform() == 'win-arm64',\
-        \ sysconfig.get_platform()\ndef machine(b):\n    assert b[:2] == b'MZ'\n    p=struct.unpack_from('<I', b, 0x3c)[0]\n\
-        \    assert b[p:p+4] == b'PE\\0\\0'\n    return struct.unpack_from('<H',b,p+4)[0]\nassert machine(pathlib.Path(sys.executable).read_bytes())\
-        \ == 0xaa64\nroots=[r'C:\\Open3D\\build\\lib\\python_package\\pip_package']\nwheels=sorted({p for r in roots for p\
-        \ in pathlib.Path(r).glob('*.whl')})\nassert wheels, roots\nresult=[]\nfor path in wheels:\n    assert 'win_arm64'\
-        \ in path.name, path.name\n    with zipfile.ZipFile(path) as z:\n        records=[n for n in z.namelist() if n.endswith('.dist-info/RECORD')]\n\
-        \        assert len(records)==1\n        count=0\n        for n,h,size in csv.reader(io.StringIO(z.read(records[0]).decode())):\n\
-        \            if h:\n                alg,want=h.split('=',1)\n                b=z.read(n)\n                assert base64.urlsafe_b64encode(hashlib.new(alg,b).digest()).rstrip(b'=').decode()==want,n\n\
-        \                assert len(b)==int(size),n\n                count+=1\n        natives={n:hex(machine(z.read(n)))\
-        \ for n in z.namelist() if n.lower().endswith(('.pyd','.dll'))}\n        assert natives and all(x=='0xaa64' for x\
-        \ in natives.values()),natives\n        result.append({'wheel':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'record_verified':count,'native':natives})\n\
-        pathlib.Path('wheel-audit.json').write_text(json.dumps(result,indent=2))\nprint(json.dumps(result,indent=2))\n"
+      run: |
+        import base64,csv,hashlib,io,json,pathlib,struct,sys,sysconfig,zipfile
+        assert sysconfig.get_platform() == 'win-arm64', sysconfig.get_platform()
+        def machine(b):
+            assert b[:2] == b'MZ'
+            p=struct.unpack_from('<I', b, 0x3c)[0]
+            assert b[p:p+4] == b'PE\0\0'
+            return struct.unpack_from('<H',b,p+4)[0]
+        assert machine(pathlib.Path(sys.executable).read_bytes()) == 0xaa64
+        roots=[r'C:\Open3D\build\lib\python_package\pip_package']
+        wheels=sorted({p for r in roots for p in pathlib.Path(r).glob('*.whl')})
+        assert wheels, roots
+        result=[]
+        for path in wheels:
+            assert 'win_arm64' in path.name, path.name
+            with zipfile.ZipFile(path) as z:
+                records=[n for n in z.namelist() if n.endswith('.dist-info/RECORD')]
+                assert len(records)==1
+                count=0
+                for n,h,size in csv.reader(io.StringIO(z.read(records[0]).decode())):
+                    if h:
+                        alg,want=h.split('=',1)
+                        b=z.read(n)
+                        assert base64.urlsafe_b64encode(hashlib.new(alg,b).digest()).rstrip(b'=').decode()==want,n
+                        assert len(b)==int(size),n
+                        count+=1
+                natives={n:hex(machine(z.read(n))) for n in z.namelist() if n.lower().endswith(('.pyd','.dll'))}
+                assert natives and all(x=='0xaa64' for x in natives.values()),natives
+                result.append({'wheel':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'record_verified':count,'native':natives})
+        pathlib.Path('wheel-audit.json').write_text(json.dumps(result,indent=2))
+        print(json.dumps(result,indent=2))
     - name: Run C++ unit tests
       working-directory: ${{ env.BUILD_DIR }}
       shell: pwsh
-      run: '$ErrorActionPreference = ''Stop''
-
+      run: |
+        $ErrorActionPreference = 'Stop'
         Write-Host "Add --gtest_random_seed=SEED to the test command to repeat this test sequence."
-
-        & ".\bin\${{ matrix.CONFIG }}\tests.exe" --gtest_shuffle --gtest_output=xml:cpp-tests.xml
-
+        & ".\bin\${{ matrix.CONFIG }}\tests.exe" --gtest_shuffle --gtest_random_seed=20261011 --gtest_output=xml:cpp-tests.xml 2>&1 | Tee-Object -FilePath cpp-tests.log
 
         if ($LASTEXITCODE -ne 0) { throw "C++ tests failed" }
-
-        '
+      if: ${{ !cancelled() && steps.wheel.outcome == 'success' }}
+    - name: Stage evidence under one absolute upload root
+      if: ${{ always() }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $stage = Join-Path $env:RUNNER_TEMP 'native-evidence'
+        New-Item -ItemType Directory -Force $stage | Out-Null
+        "EVIDENCE_ROOT=$stage" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        $manifest = @()
+        $dest = Join-Path $stage 'wheel'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:BUILD_DIR/lib/python_package/pip_package/open3d*.whl" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'metadata'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:GITHUB_WORKSPACE/provenance.json" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'metadata'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:GITHUB_WORKSPACE/wheel-audit.json" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'tests'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:BUILD_DIR/cpp-tests.xml" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'logs'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:BUILD_DIR/cpp-tests.log" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'logs'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:BUILD_DIR/build-tests.log" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'cmake'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:BUILD_DIR/CMakeCache.txt" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'cmake'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:BUILD_DIR/CMakeFiles/CMakeConfigureLog.yaml" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'cmake'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:GITHUB_WORKSPACE/vcpkg-configuration.json" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $manifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $stage "staging-manifest.json")
+        Get-ChildItem -LiteralPath $stage -Recurse -File | Format-Table FullName,Length
+        if ($manifest.Count -eq 0) { throw "No evidence staged" }
+    - name: Require complete wheel and test evidence
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (@(Get-ChildItem "$env:EVIDENCE_ROOT/wheel/*.whl" -File -ErrorAction SilentlyContinue).Count -eq 0) { throw "Missing required evidence: wheel/*.whl" }
+        if (@(Get-ChildItem "$env:EVIDENCE_ROOT/metadata/provenance.json" -File -ErrorAction SilentlyContinue).Count -eq 0) { throw "Missing required evidence: metadata/provenance.json" }
+        if (@(Get-ChildItem "$env:EVIDENCE_ROOT/metadata/wheel-audit.json" -File -ErrorAction SilentlyContinue).Count -eq 0) { throw "Missing required evidence: metadata/wheel-audit.json" }
+        if (@(Get-ChildItem "$env:EVIDENCE_ROOT/tests/cpp-tests.xml" -File -ErrorAction SilentlyContinue).Count -eq 0) { throw "Missing required evidence: tests/cpp-tests.xml" }
     - name: Upload ARM64 wheel
       if: ${{ always() && !cancelled() }}
       uses: actions/upload-artifact@v4
       with:
         name: open3d-wheel-arm64-${{ matrix.CONFIG }}
-        path: ${{ env.BUILD_DIR }}/lib/python_package/pip_package/open3d*.whl
-        if-no-files-found: warn
+        path: ${{ env.EVIDENCE_ROOT }}/wheel/*.whl
+        if-no-files-found: error
     - name: Upload open3d-build-evidence
       uses: actions/upload-artifact@v4
       with:
         name: open3d-build-evidence
-        path: 'provenance.json
-
-          wheel-audit.json
-
-          ${{ env.BUILD_DIR }}/cpp-tests.xml
-
-          ${{ env.BUILD_DIR }}/CMakeCache.txt
-
-          ${{ env.BUILD_DIR }}/CMakeFiles/CMakeConfigureLog.yaml'
-        if-no-files-found: warn
+        path: ${{ env.EVIDENCE_ROOT }}/
+        if-no-files-found: error
         retention-days: 14
       if: ${{ always() }}
     timeout-minutes: 90
@@ -166,14 +418,10 @@ jobs:
       env:
         EXPECTED_SOURCE_SHA: f47d260b2074d56d00e7a68eeabebd5bd45ad812
         SOURCE_REPOSITORY: mayankag-qti/Open3D
-      run: '$actual = (git rev-parse HEAD).Trim()
-
+      run: |
+        $actual = (git rev-parse HEAD).Trim()
         if ($LASTEXITCODE -ne 0 -or $actual -ne $env:EXPECTED_SOURCE_SHA) { throw "Unexpected source revision: $actual" }
-
-        @{ source_sha=$actual; source_repository=$env:SOURCE_REPOSITORY; ci_sha=$env:GITHUB_SHA; runner_arch=$env:RUNNER_ARCH
-        } | ConvertTo-Json | Set-Content provenance.json
-
-        '
+        @{ source_sha=$actual; source_repository=$env:SOURCE_REPOSITORY; ci_sha=$env:GITHUB_SHA; runner_arch=$env:RUNNER_ARCH } | ConvertTo-Json | Set-Content provenance.json
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -186,80 +434,88 @@ jobs:
         path: wheel
     - name: Test Python package
       shell: pwsh
-      run: '$ErrorActionPreference = ''Stop''
-
+      run: |
+        $ErrorActionPreference = 'Stop'
         python -m venv open3d_test_venv
-
         if ($LASTEXITCODE -ne 0) { throw "venv creation failed." }
 
-
         . .\open3d_test_venv\Scripts\Activate.ps1
-
 
         python -m pip install -U pip==${{ env.PIP_VER }}
-
         if ($LASTEXITCODE -ne 0) { deactivate; throw "pip pin failed." }
 
-
         python -m pip install -U -r python/requirements_test.txt
-
         if ($LASTEXITCODE -ne 0) { deactivate; throw "test requirements install failed." }
 
-
         $whl = (Get-ChildItem wheel\open3d*.whl | Select-Object -First 1).FullName
-
         if (-not $whl) { deactivate; throw "ARM64 Open3D wheel not found." }
 
-
         Write-Host "Installing $whl"
-
         python -m pip install $whl
-
         if ($LASTEXITCODE -ne 0) { deactivate; throw "Wheel install failed." }
 
-
-        python -c "import open3d; print(''Imported:'', open3d.__version__)"
-
+        python -c "import open3d; print('Imported:', open3d.__version__)"
         if ($LASTEXITCODE -ne 0) { deactivate; throw "import open3d failed." }
 
-
         python -c "import open3d.core as o3c; print(o3c.Tensor.ones((2, 2)))"
-
         $exitCode = $LASTEXITCODE
-
         deactivate
-
         if ($exitCode -ne 0) { throw "open3d.core smoke test failed." }
-
-        '
     - name: Run Python unit tests
       shell: pwsh
-      run: '$ErrorActionPreference = ''Stop''
-
+      run: |
+        $ErrorActionPreference = 'Stop'
         . .\open3d_test_venv\Scripts\Activate.ps1
-
         Write-Host "Add --randomly-seed=SEED to the test command to reproduce test order."
-
         python -m pytest python/test/ --junitxml=python-tests.xml
-
         $exitCode = $LASTEXITCODE
-
         deactivate
-
         if ($exitCode -ne 0) { throw "Python unit tests failed with exit code $exitCode." }
-
-        '
+    - name: Stage Python evidence under one absolute upload root
+      if: ${{ always() }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $stage = Join-Path $env:RUNNER_TEMP 'native-evidence'
+        New-Item -ItemType Directory -Force $stage | Out-Null
+        "EVIDENCE_ROOT=$stage" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+        $manifest = @()
+        $dest = Join-Path $stage 'metadata'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:GITHUB_WORKSPACE/provenance.json" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $dest = Join-Path $stage 'tests'
+        New-Item -ItemType Directory -Force $dest | Out-Null
+        $files = @(Get-ChildItem -Path "$env:GITHUB_WORKSPACE/python-tests.xml" -File  -ErrorAction SilentlyContinue)
+        foreach ($file in $files) {
+          $target = Join-Path $dest $file.Name
+          if (Test-Path $target) { $target = Join-Path $dest (($manifest.Count.ToString()) + "-" + $file.Name) }
+          Copy-Item -LiteralPath $file.FullName -Destination $target
+          $manifest += @{source=$file.FullName; staged=$target; sha256=(Get-FileHash -Algorithm SHA256 $target).Hash}
+        }
+        $manifest | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $stage "staging-manifest.json")
+        Get-ChildItem -LiteralPath $stage -Recurse -File | Format-Table FullName,Length
+        if ($manifest.Count -eq 0) { throw "No evidence staged" }
+    - name: Require complete wheel and test evidence
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if (@(Get-ChildItem "$env:EVIDENCE_ROOT/metadata/provenance.json" -File -ErrorAction SilentlyContinue).Count -eq 0) { throw "Missing required evidence: metadata/provenance.json" }
+        if (@(Get-ChildItem "$env:EVIDENCE_ROOT/tests/python-tests.xml" -File -ErrorAction SilentlyContinue).Count -eq 0) { throw "Missing required evidence: tests/python-tests.xml" }
     - name: Upload open3d-python-evidence
       uses: actions/upload-artifact@v4
       with:
         name: open3d-python-evidence
-        path: 'provenance.json
-
-          python-tests.xml'
-        if-no-files-found: warn
+        path: ${{ env.EVIDENCE_ROOT }}/
+        if-no-files-found: error
         retention-days: 14
       if: ${{ always() }}
-    timeout-minutes: 30
+    timeout-minutes: 90
 env:
   PIP_VER: 24.3.1
   BUILD_DIR: C:\Open3D\build
