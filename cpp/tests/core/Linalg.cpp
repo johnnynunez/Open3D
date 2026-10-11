@@ -564,5 +564,37 @@ TEST_P(LinalgPermuteDevices, KernelOps) {
     EXPECT_TRUE(output3x1.AllClose(Solve_Expected));
 }
 
+TEST(LinalgKernel, SolveSVD3x3Float64) {
+    // Same nonsingular permutation system as KernelOps, now in Float64.
+    // Partial-width bit selection used to produce nonfinite double results.
+    const double A[9] = {0, 1, 0, 1, 0, 0, 0, 0, 1};
+    const double b[3] = {1, 3, 6};
+    double x[3] = {};
+    core::linalg::kernel::solve_svd3x3(A, b, x);
+    const double expected[3] = {3, 1, 6};
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_TRUE(std::isfinite(x[i]));
+        EXPECT_NEAR(x[i], expected[i], 1e-8);
+    }
+
+    for (double scale : {0.01, 1.0, 100.0}) {
+        const double matrix[9] = {4 * scale, scale, 0.5 * scale,
+                                  scale, 3 * scale, 0.2 * scale,
+                                  0.5 * scale, 0.2 * scale, 2 * scale};
+        const double solution[3] = {1, -2, 3};
+        double rhs[3] = {};
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                rhs[i] += matrix[3 * i + j] * solution[j];
+            }
+        }
+        core::linalg::kernel::solve_svd3x3(matrix, rhs, x);
+        for (int i = 0; i < 3; ++i) {
+            EXPECT_TRUE(std::isfinite(x[i]));
+            EXPECT_NEAR(x[i], solution[i], 1e-8);
+        }
+    }
+}
+
 }  // namespace tests
 }  // namespace open3d

@@ -83,6 +83,13 @@ union un {
     unsigned int ui;
 };
 
+// Double bit selections require the entire IEEE-754 representation.
+template <>
+union un<double> {
+    double f;
+    unsigned long long ui;
+};
+
 template <typename scalar_t>
 OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3(const scalar_t *A_3x3,
                                               scalar_t *U_3x3,
@@ -167,10 +174,10 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
         Stmp5.f = __dsub_rn(Ss11.f, Ss22.f);
 
         Stmp2.f = Ssh.f * Ssh.f;
-        Stmp1.ui = (Stmp2.f >= gtiny_number) ? 0xffffffff : 0;
+        Stmp1.ui = (Stmp2.f >= gtiny_number) ? 0xffffffffffffffffULL : 0;
         Ssh.ui = Stmp1.ui & Ssh.ui;
         Sch.ui = Stmp1.ui & Stmp5.ui;
-        Stmp2.ui = ~Stmp1.ui & gone;
+        Stmp2.ui = ~Stmp1.ui & 0x3ff0000000000000ULL;
         Sch.ui = Sch.ui | Stmp2.ui;
 
         Stmp1.f = Ssh.f * Ssh.f;
@@ -181,12 +188,12 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
         Ssh.f = Stmp4.f * Ssh.f;
         Sch.f = Stmp4.f * Sch.f;
         Stmp1.f = gfour_gamma_squared * Stmp1.f;
-        Stmp1.ui = (Stmp2.f <= Stmp1.f) ? 0xffffffff : 0;
+        Stmp1.ui = (Stmp2.f <= Stmp1.f) ? 0xffffffffffffffffULL : 0;
 
-        Stmp2.ui = gsine_pi_over_eight & Stmp1.ui;
+        Stmp2.ui = 0x3fd87de2a6aea963ULL & Stmp1.ui;
         Ssh.ui = ~Stmp1.ui & Ssh.ui;
         Ssh.ui = Ssh.ui | Stmp2.ui;
-        Stmp2.ui = gcosine_pi_over_eight & Stmp1.ui;
+        Stmp2.ui = 0x3fed906bcf328d46ULL & Stmp1.ui;
         Sch.ui = ~Stmp1.ui & Sch.ui;
         Sch.ui = Sch.ui | Stmp2.ui;
 
@@ -272,10 +279,10 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
         Stmp5.f = __dsub_rn(Ss22.f, Ss33.f);
 
         Stmp2.f = Ssh.f * Ssh.f;
-        Stmp1.ui = (Stmp2.f >= gtiny_number) ? 0xffffffff : 0;
+        Stmp1.ui = (Stmp2.f >= gtiny_number) ? 0xffffffffffffffffULL : 0;
         Ssh.ui = Stmp1.ui & Ssh.ui;
         Sch.ui = Stmp1.ui & Stmp5.ui;
-        Stmp2.ui = ~Stmp1.ui & gone;
+        Stmp2.ui = ~Stmp1.ui & 0x3ff0000000000000ULL;
         Sch.ui = Sch.ui | Stmp2.ui;
 
         Stmp1.f = Ssh.f * Ssh.f;
@@ -286,12 +293,12 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
         Ssh.f = Stmp4.f * Ssh.f;
         Sch.f = Stmp4.f * Sch.f;
         Stmp1.f = gfour_gamma_squared * Stmp1.f;
-        Stmp1.ui = (Stmp2.f <= Stmp1.f) ? 0xffffffff : 0;
+        Stmp1.ui = (Stmp2.f <= Stmp1.f) ? 0xffffffffffffffffULL : 0;
 
-        Stmp2.ui = gsine_pi_over_eight & Stmp1.ui;
+        Stmp2.ui = 0x3fd87de2a6aea963ULL & Stmp1.ui;
         Ssh.ui = ~Stmp1.ui & Ssh.ui;
         Ssh.ui = Ssh.ui | Stmp2.ui;
-        Stmp2.ui = gcosine_pi_over_eight & Stmp1.ui;
+        Stmp2.ui = 0x3fed906bcf328d46ULL & Stmp1.ui;
         Sch.ui = ~Stmp1.ui & Sch.ui;
         Sch.ui = Sch.ui | Stmp2.ui;
 
@@ -379,10 +386,10 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
         Stmp5.f = __dsub_rn(Ss33.f, Ss11.f);
 
         Stmp2.f = Ssh.f * Ssh.f;
-        Stmp1.ui = (Stmp2.f >= gtiny_number) ? 0xffffffff : 0;
+        Stmp1.ui = (Stmp2.f >= gtiny_number) ? 0xffffffffffffffffULL : 0;
         Ssh.ui = Stmp1.ui & Ssh.ui;
         Sch.ui = Stmp1.ui & Stmp5.ui;
-        Stmp2.ui = ~Stmp1.ui & gone;
+        Stmp2.ui = ~Stmp1.ui & 0x3ff0000000000000ULL;
         Sch.ui = Sch.ui | Stmp2.ui;
 
         Stmp1.f = Ssh.f * Ssh.f;
@@ -393,12 +400,12 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
         Ssh.f = Stmp4.f * Ssh.f;
         Sch.f = Stmp4.f * Sch.f;
         Stmp1.f = gfour_gamma_squared * Stmp1.f;
-        Stmp1.ui = (Stmp2.f <= Stmp1.f) ? 0xffffffff : 0;
+        Stmp1.ui = (Stmp2.f <= Stmp1.f) ? 0xffffffffffffffffULL : 0;
 
-        Stmp2.ui = gsine_pi_over_eight & Stmp1.ui;
+        Stmp2.ui = 0x3fd87de2a6aea963ULL & Stmp1.ui;
         Ssh.ui = ~Stmp1.ui & Ssh.ui;
         Ssh.ui = Ssh.ui | Stmp2.ui;
-        Stmp2.ui = gcosine_pi_over_eight & Stmp1.ui;
+        Stmp2.ui = 0x3fed906bcf328d46ULL & Stmp1.ui;
         Sch.ui = ~Stmp1.ui & Sch.ui;
         Sch.ui = Sch.ui | Stmp2.ui;
 
@@ -614,7 +621,7 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
 
     // Swap columns 1-2 if necessary
 
-    Stmp4.ui = (Stmp1.f < Stmp2.f) ? 0xffffffff : 0;
+    Stmp4.ui = (Stmp1.f < Stmp2.f) ? 0xffffffffffffffffULL : 0;
     Stmp5.ui = Sa11.ui ^ Sa12.ui;
     Stmp5.ui = Stmp5.ui & Stmp4.ui;
     Sa11.ui = Sa11.ui ^ Stmp5.ui;
@@ -668,7 +675,7 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
 
     // Swap columns 1-3 if necessary
 
-    Stmp4.ui = (Stmp1.f < Stmp3.f) ? 0xffffffff : 0;
+    Stmp4.ui = (Stmp1.f < Stmp3.f) ? 0xffffffffffffffffULL : 0;
     Stmp5.ui = Sa11.ui ^ Sa13.ui;
     Stmp5.ui = Stmp5.ui & Stmp4.ui;
     Sa11.ui = Sa11.ui ^ Stmp5.ui;
@@ -722,7 +729,7 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
 
     // Swap columns 2-3 if necessary
 
-    Stmp4.ui = (Stmp2.f < Stmp3.f) ? 0xffffffff : 0;
+    Stmp4.ui = (Stmp2.f < Stmp3.f) ? 0xffffffffffffffffULL : 0;
     Stmp5.ui = Sa12.ui ^ Sa13.ui;
     Stmp5.ui = Stmp5.ui & Stmp4.ui;
     Sa12.ui = Sa12.ui ^ Stmp5.ui;
@@ -789,14 +796,14 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
     Su33.f = 1.f;
 
     Ssh.f = Sa21.f * Sa21.f;
-    Ssh.ui = (Ssh.f >= gsmall_number) ? 0xffffffff : 0;
+    Ssh.ui = (Ssh.f >= gsmall_number) ? 0xffffffffffffffffULL : 0;
     Ssh.ui = Ssh.ui & Sa21.ui;
 
     Stmp5.f = 0.f;
     Sch.f = __dsub_rn(Stmp5.f, Sa11.f);
     Sch.f = max(Sch.f, Sa11.f);
     Sch.f = max(Sch.f, gsmall_number);
-    Stmp5.ui = (Sa11.f >= Stmp5.f) ? 0xffffffff : 0;
+    Stmp5.ui = (Sa11.f >= Stmp5.f) ? 0xffffffffffffffffULL : 0;
 
     Stmp1.f = Sch.f * Sch.f;
     Stmp2.f = Ssh.f * Ssh.f;
@@ -894,14 +901,14 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
     // Second Givens rotation
 
     Ssh.f = Sa31.f * Sa31.f;
-    Ssh.ui = (Ssh.f >= gsmall_number) ? 0xffffffff : 0;
+    Ssh.ui = (Ssh.f >= gsmall_number) ? 0xffffffffffffffffULL : 0;
     Ssh.ui = Ssh.ui & Sa31.ui;
 
     Stmp5.f = 0.f;
     Sch.f = __dsub_rn(Stmp5.f, Sa11.f);
     Sch.f = max(Sch.f, Sa11.f);
     Sch.f = max(Sch.f, gsmall_number);
-    Stmp5.ui = (Sa11.f >= Stmp5.f) ? 0xffffffff : 0;
+    Stmp5.ui = (Sa11.f >= Stmp5.f) ? 0xffffffffffffffffULL : 0;
 
     Stmp1.f = Sch.f * Sch.f;
     Stmp2.f = Ssh.f * Ssh.f;
@@ -999,14 +1006,14 @@ OPEN3D_DEVICE OPEN3D_FORCE_INLINE void svd3x3<double>(const double *A_3x3,
     // Third Givens Rotation
 
     Ssh.f = Sa32.f * Sa32.f;
-    Ssh.ui = (Ssh.f >= gsmall_number) ? 0xffffffff : 0;
+    Ssh.ui = (Ssh.f >= gsmall_number) ? 0xffffffffffffffffULL : 0;
     Ssh.ui = Ssh.ui & Sa32.ui;
 
     Stmp5.f = 0.f;
     Sch.f = __dsub_rn(Stmp5.f, Sa22.f);
     Sch.f = max(Sch.f, Sa22.f);
     Sch.f = max(Sch.f, gsmall_number);
-    Stmp5.ui = (Sa22.f >= Stmp5.f) ? 0xffffffff : 0;
+    Stmp5.ui = (Sa22.f >= Stmp5.f) ? 0xffffffffffffffffULL : 0;
 
     Stmp1.f = Sch.f * Sch.f;
     Stmp2.f = Ssh.f * Ssh.f;
